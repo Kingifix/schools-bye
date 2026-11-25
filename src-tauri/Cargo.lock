@@ -3338,7 +3338,7 @@ dependencies = [
 
 [[package]]
 name = "schools-bye"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "hmac",
  "regex",
