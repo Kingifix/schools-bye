@@ -227,6 +227,7 @@ async fn login(
     store.set("pupil_id", serde_json::json!(session.pupil_id));
     store.set("school_domain", serde_json::json!(session.domain));
     store.set("api_token", serde_json::json!(session.api_token));
+    store.set("pupil_resolved", serde_json::json!(true));
     store.save().map_err(|e| e.to_string())?;
 
     state.reset();
@@ -292,27 +293,48 @@ async fn site_login(
     let session_id = cookie_value(&post, "sessionid").ok_or("BAD_CREDENTIALS")?;
     let csrf = cookie_value(&post, "csrftoken").unwrap_or(csrf_cookie);
 
-    let url = url::Url::parse(&location).map_err(|e| e.to_string())?;
-    let host = url.host_str().ok_or("No host in redirect")?.to_string();
-    let pupil_id = url
-        .path_segments()
-        .and_then(|mut s| {
-            s.next();
-            s.next()
-        })
-        .filter(|s| !s.is_empty())
-        .ok_or("Could not parse pupil_id")?
-        .to_string();
+    let cookie = format!("csrftoken={csrf}; sessionid={session_id}");
+    let (pupil_id, domain) = resolve_pupil(client, &cookie, &location).await?;
+    Ok((cookie, pupil_id, domain))
+}
 
-    Ok((format!("csrftoken={csrf}; sessionid={session_id}"), pupil_id, format!("https://{host}")))
+/// Numeric id from a `/pupil/{id}` path, ignoring any prefix (e.g. `/m/pupil/123/`).
+fn pupil_id_in(path: &str) -> Option<String> {
+    regex::Regex::new(r"/pupil/(\d+)").unwrap().captures(path).map(|c| c[1].to_string())
+}
+
+/// Follows the post-login redirects to the pupil page. The redirect isn't always
+/// `/pupil/{id}` (parents land on `/parent/{id}`, some schools go through the root),
+/// so when the final URL isn't a pupil page, takes the first pupil link on it.
+async fn resolve_pupil(client: &reqwest::Client, cookie: &str, location: &str) -> Result<(String, String), String> {
+    let mut url = url::Url::parse("https://schools.by/")
+        .and_then(|b| b.join(location))
+        .map_err(|e| e.to_string())?;
+    for _ in 0..6 {
+        let domain = format!("https://{}", url.host_str().ok_or("No host in redirect")?);
+        if let Some(id) = pupil_id_in(url.path()) {
+            return Ok((id, domain));
+        }
+        let resp = client.get(url.clone()).header(COOKIE, cookie).send().await.map_err(|e| format!("NETWORK: {e}"))?;
+        if resp.status().is_redirection() {
+            let loc = resp.headers().get(LOCATION).and_then(|v| v.to_str().ok()).ok_or("No redirect location")?;
+            url = url.join(loc).map_err(|e| e.to_string())?;
+            continue;
+        }
+        let html = resp.text().await.map_err(|e| format!("NETWORK: {e}"))?;
+        return pupil_id_in(&html).map(|id| (id, domain)).ok_or_else(|| "Could not parse pupil_id".into());
+    }
+    Err("Too many redirects".into())
 }
 
 #[tauri::command]
 async fn restore_session(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<bool, String> {
     let store = app.store("session.json").map_err(|e| e.to_string())?;
     let get = |k: &str| store.get(k).and_then(|v| v.as_str().map(str::to_string));
+    // Sessions saved before resolve_pupil may hold a wrong pupil id: ask to log in again.
+    let resolved = store.get("pupil_resolved").and_then(|v| v.as_bool()).unwrap_or(false);
     match (get("cookie"), get("pupil_id"), get("school_domain")) {
-        (Some(cookie), Some(pupil_id), Some(domain)) => {
+        (Some(cookie), Some(pupil_id), Some(domain)) if resolved => {
             let api_token = get("api_token");
             *state.session.lock().unwrap() = Some(Session { cookie, pupil_id, domain, api_token });
             Ok(true)
