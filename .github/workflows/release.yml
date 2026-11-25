@@ -1,0 +1,105 @@
+# Builds a signed APK and publishes a GitHub release whenever the version in
+# package.json changes on main (or on manual run). Bump the version -> push -> done.
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: 27.2.12479018
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: v
+        run: |
+          VERSION=$(jq -r .version package.json)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release v$VERSION already exists, nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - if: steps.v.outputs.exists == 'false'
+        uses: oven-sh/setup-bun@v2
+
+      - if: steps.v.outputs.exists == 'false'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - if: steps.v.outputs.exists == 'false'
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          sdkmanager --install "ndk;$NDK_VERSION"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - if: steps.v.outputs.exists == 'false'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - if: steps.v.outputs.exists == 'false'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Signing key
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          cat > src-tauri/gen/android/keystore.properties <<EOF
+          keyAlias=$ANDROID_KEY_ALIAS
+          password=$ANDROID_KEY_PASSWORD
+          storeFile=$RUNNER_TEMP/release.jks
+          EOF
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Build APK
+        if: steps.v.outputs.exists == 'false'
+        run: |
+          bun install --frozen-lockfile
+          bun tauri android build --apk --target aarch64
+          mkdir -p out
+          cp src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk \
+            "out/schools.bye-${{ steps.v.outputs.version }}.apk"
+
+      - name: Security report (SHA-256, trackers, VirusTotal)
+        if: steps.v.outputs.exists == 'false'
+        run: python3 .github/scripts/report.py "out/schools.bye-${{ steps.v.outputs.version }}.apk" > notes.md
+        env:
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+
+      - name: Publish release
+        if: steps.v.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.v.outputs.tag }}
+          name: schools.bye ${{ steps.v.outputs.version }}
+          body_path: notes.md
+          generate_release_notes: true
+          files: out/*.apk
