@@ -66,4 +66,4 @@ if key:
 else:
     out.append(f"VirusTotal: [проверить]({link})")
 
-print("\n".join(out))
+print("\n\n".join(line for line in out if line))
