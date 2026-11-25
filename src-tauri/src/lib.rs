@@ -679,6 +679,18 @@ struct UpdateInfo {
     notes: String,
     url: String,
     size: u64,
+    /// SHA-256 of the APK as GitHub computed it on upload (asset `digest`).
+    sha256: String,
+}
+
+/// Hosts the APK download may go through (GitHub + its release CDN).
+fn trusted_update_url(u: &str) -> bool {
+    url::Url::parse(u).is_ok_and(|u| {
+        u.scheme() == "https"
+            && u.host_str().is_some_and(|h| {
+                h == "github.com" || h == "objects.githubusercontent.com" || h == "release-assets.githubusercontent.com"
+            })
+    })
 }
 
 /// "v0.5.2" / "0.5.2" -> (0, 5, 2)
@@ -714,19 +726,32 @@ async fn check_update(app: tauri::AppHandle, state: tauri::State<'_, AppState>) 
     else {
         return Ok(None);
     };
+    // No checksum -> no update offered: the APK is never installed unverified.
+    let Some(sha256) = asset["digest"]
+        .as_str()
+        .and_then(|d| d.strip_prefix("sha256:"))
+        .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+    else {
+        return Ok(None);
+    };
     Ok(Some(UpdateInfo {
         version: tag.trim_start_matches('v').to_string(),
         notes: v["body"].as_str().unwrap_or_default().to_string(),
         url: asset["browser_download_url"].as_str().unwrap_or_default().to_string(),
         size: asset["size"].as_u64().unwrap_or(0),
+        sha256: sha256.to_ascii_lowercase(),
     }))
 }
 
-/// Downloads the APK (reporting progress) and opens the system installer.
+/// Downloads the APK (reporting progress), checks its SHA-256 and opens the system installer.
+/// On Android the plugin additionally checks package name + signing certificate.
 #[tauri::command]
-async fn install_update(url: String, app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
-    if !url.starts_with("https://github.com/") {
+async fn install_update(url: String, sha256: String, app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    if !url.starts_with("https://github.com/") || !trusted_update_url(&url) {
         return Err("bad update url".into());
+    }
+    if sha256.len() != 64 {
+        return Err("UPDATE_VERIFY: no checksum".into());
     }
     let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("update");
     let _ = std::fs::remove_dir_all(&dir);
@@ -746,6 +771,9 @@ async fn install_update(url: String, app: tauri::AppHandle, state: tauri::State<
             .map_err(|e| format!("NETWORK: {e}"))?;
         if r.status().is_redirection() {
             current = r.headers().get(LOCATION).and_then(|v| v.to_str().ok()).ok_or("bad redirect")?.to_string();
+            if !trusted_update_url(&current) {
+                return Err("bad update redirect".into());
+            }
             continue;
         }
         resp = Some(r);
@@ -764,6 +792,13 @@ async fn install_update(url: String, app: tauri::AppHandle, state: tauri::State<
         if pct != last {
             last = pct;
             let _ = app.emit("update-progress", pct);
+        }
+    }
+    {
+        use sha2::{Digest, Sha256};
+        let got: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+        if !got.eq_ignore_ascii_case(&sha256) {
+            return Err("UPDATE_VERIFY: checksum mismatch".into());
         }
     }
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;

@@ -752,24 +752,46 @@ body.sheet-open .sheet {
 }
 .update-banner {
   position: fixed;
-  top: calc(var(--header-h) + 8px);
+  top: calc(var(--header-h) + 10px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   max-width: calc(100vw - 32px);
-  padding: 9px 16px;
+  padding: 8px 8px 8px 14px;
   border-radius: 999px;
-  border: 1px solid color-mix(in oklch, var(--accent) 50%, transparent);
-  background: color-mix(in oklch, var(--accent) 22%, var(--card));
+  border: 1px solid var(--border);
+  background: var(--card-2);
   color: var(--foreground);
+  font: inherit;
   font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   cursor: pointer;
+  animation: ub-in 0.25s ease-out;
 }
-.update-banner:active { opacity: 0.7; }
-.update-notes { padding: 4px; max-height: 40vh; overflow-y: auto; font-size: 14px; color: var(--muted-foreground); }
+.update-banner[hidden] { display: none; }
+.update-banner:active { transform: translateX(-50%) scale(0.97); }
+.update-banner.loading {
+  padding: 8px 16px;
+  background: linear-gradient(90deg, color-mix(in oklch, var(--accent) 28%, var(--card-2)) var(--p, 0%), var(--card-2) var(--p, 0%));
+}
+.ub-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 25%, transparent); }
+.ub-text { overflow: hidden; text-overflow: ellipsis; }
+.ub-go { flex: none; padding: 5px 12px; border-radius: 999px; background: var(--foreground); color: var(--background); font-size: 13px; }
+@keyframes ub-in { from { opacity: 0; transform: translate(-50%, -8px); } }
+
+.update-notes { margin: 8px 4px 0; max-height: 45vh; overflow-y: auto; font-size: 14px; line-height: 1.45; color: var(--muted-foreground); overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+.update-notes h4 { margin: 14px 0 6px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--foreground); }
+.update-notes h4:first-child { margin-top: 0; }
+.update-notes p { margin: 0 0 8px; }
+.update-notes ul { margin: 0 0 8px; padding-left: 18px; }
+.update-notes li { margin: 2px 0; }
+.update-notes b { color: var(--foreground); }
+.update-notes code { font-family: ui-monospace, monospace; font-size: 12px; padding: 1px 4px; border-radius: 4px; background: var(--card-2); word-break: break-all; }
 .update-go {
   display: block;
   width: calc(100% - 8px);

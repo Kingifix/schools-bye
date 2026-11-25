@@ -1142,37 +1142,80 @@ interface UpdateInfo {
   notes: string;
   url: string;
   size: number;
+  sha256: string;
 }
 
-let update: UpdateInfo | null = null;
+let update: UpdateInfo | null = store.get<UpdateInfo>("update-info") ?? null;
 let updating = false;
-const UPDATE_CHECK_EVERY = 6 * 3600_000;
+// One unauthenticated GitHub request; their limit is 60/hour, so every 30 min is safe.
+const UPDATE_CHECK_EVERY = 30 * 60_000;
+
+/** Minimal Markdown for release notes: headings, lists, **bold**, `code`, [links](…), bare URLs. */
+function markdown(src: string): string {
+  const inline = (t: string) =>
+    escapeHtml(t)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" class="hw-link">$1</a>')
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" class="hw-link">$2</a>');
+  const out: string[] = [];
+  let list = false;
+  for (const raw of src.replace(/\r/g, "").split("\n")) {
+    const line = raw.trim();
+    const li = line.match(/^[-*]\s+(.*)/);
+    if (list && !li) {
+      out.push("</ul>");
+      list = false;
+    }
+    if (!line) continue;
+    const h = line.match(/^#{1,6}\s+(.*)/);
+    if (h) out.push(`<h4>${inline(h[1])}</h4>`);
+    else if (li) {
+      if (!list) out.push("<ul>");
+      list = true;
+      out.push(`<li>${inline(li[1])}</li>`);
+    } else out.push(`<p>${inline(line)}</p>`);
+  }
+  if (list) out.push("</ul>");
+  return out.join("");
+}
+
+function renderBanner(progress?: number) {
+  const banner = $("update-banner");
+  banner.hidden = !update;
+  if (!update) return;
+  const downloading = progress !== undefined;
+  banner.classList.toggle("loading", downloading);
+  banner.style.setProperty("--p", `${progress ?? 0}%`);
+  banner.innerHTML = downloading
+    ? `<span class="ub-text">Скачиваю обновление${progress ? ` · ${progress}%` : "…"}</span>`
+    : `<span class="ub-dot"></span><span class="ub-text">Доступна версия ${escapeHtml(update.version)}</span><span class="ub-go">Что нового</span>`;
+}
 
 async function checkUpdate(manual = false) {
   const last = store.get<number>("update-check") ?? 0;
-  if (!manual && Date.now() - last < UPDATE_CHECK_EVERY) return;
+  if (!manual && Date.now() - last < UPDATE_CHECK_EVERY) return renderBanner();
   try {
     update = await invoke<UpdateInfo | null>("check_update");
     store.set("update-check", Date.now());
+    store.set("update-info", update);
   } catch (e) {
     if (manual) toast("Не удалось проверить обновления");
     console.error("update", e);
     return;
   }
-  const banner = $("update-banner");
-  banner.hidden = !update;
-  if (update) banner.textContent = `Вышла версия ${update.version} — обновить`;
-  else if (manual) toast("Установлена последняя версия");
+  if (!updating) renderBanner();
+  if (!update && manual) toast("Установлена последняя версия");
 }
 
 function showUpdate() {
-  if (!update) return;
+  if (!update || updating) return;
   const u = update;
   const size = u.size ? ` · ${(u.size / 1048576).toFixed(1)} МБ` : "";
   openSheet(
     `<div class="sheet-title">Версия ${escapeHtml(u.version)}</div>
      <p class="sheet-sub">Сейчас ${escapeHtml($("version-btn").dataset.v ?? "")}${size}</p>
-     ${u.notes ? `<div class="det-text update-notes">${linkify(u.notes)}</div>` : ""}
+     ${u.notes ? `<div class="update-notes">${markdown(u.notes)}</div>` : ""}
      <button class="update-go" data-url="go">Обновить</button>`,
     () => {
       closeSheet();
@@ -1185,30 +1228,41 @@ async function installUpdate(u: UpdateInfo) {
   if (updating) return;
   updating = true;
   setBusy(true);
-  const banner = $("update-banner");
-  banner.textContent = "Скачиваю обновление…";
+  renderBanner(0);
   try {
-    await invoke("install_update", { url: u.url });
-    banner.textContent = `Вышла версия ${u.version} — обновить`;
+    await invoke("install_update", { url: u.url, sha256: u.sha256 });
   } catch (e) {
-    banner.textContent = `Вышла версия ${u.version} — обновить`;
-    handleError(e);
+    if (String(e).includes("UPDATE_VERIFY")) toast("Обновление не прошло проверку подлинности и не установлено");
+    else handleError(e);
   } finally {
     updating = false;
     setBusy(false);
+    renderBanner();
   }
 }
 
 listen<number>("update-progress", (e) => {
-  if (updating) $("update-banner").textContent = `Скачиваю обновление… ${e.payload}%`;
+  if (updating) renderBanner(e.payload);
 });
 $("update-banner").addEventListener("click", showUpdate);
 $("version-btn").addEventListener("click", () => checkUpdate(true).then(() => update && showUpdate()));
+// The WebView survives in the background, so startApp() alone would check only once per cold start.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") checkUpdate();
+});
 
 invoke<string>("app_version")
   .then((v) => {
     const b = $("version-btn");
     b.dataset.v = v;
+    // Just updated: the cached "new version" is the one running now.
+    if (store.get<string>("update-for") !== v) {
+      store.set("update-for", v);
+      store.set("update-check", 0);
+      store.set("update-info", null);
+      update = null;
+      renderBanner();
+    }
     b.textContent = `версия ${v} · проверить обновления`;
   })
   .catch(() => {});
@@ -1266,6 +1320,7 @@ function startApp() {
   if (last) weekCache.set(cacheKey(null, null), last);
   fetchWeek(null, null, { scrollToToday: true });
   // After the first page is in: one request to GitHub, not to schools.by.
+  renderBanner();
   setTimeout(() => checkUpdate(), 4000);
 }
 
