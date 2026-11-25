@@ -21,6 +21,8 @@ jobs:
       NDK_VERSION: 27.2.12479018
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags + history for the changelog
 
       - name: Read version
         id: v
@@ -45,13 +47,35 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+          cache: gradle
+          cache-dependency-path: |
+            src-tauri/gen/android/**/*.gradle*
+            src-tauri/gen/android/**/gradle-wrapper.properties
+
+      - name: Cache bun packages
+        if: steps.v.outputs.exists == 'false'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Cache NDK
+        id: ndk-cache
+        if: steps.v.outputs.exists == 'false'
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/lib/android/sdk/ndk/${{ env.NDK_VERSION }}
+          key: ndk-${{ runner.os }}-${{ env.NDK_VERSION }}
 
       # The runner ships the Android SDK; only the NDK version has to match.
       - name: Install NDK
         if: steps.v.outputs.exists == 'false'
         run: |
-          SDKMANAGER="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin | sort -V | tail -1)/sdkmanager"
-          yes | "$SDKMANAGER" --install "ndk;$NDK_VERSION" > /dev/null
+          if [ "${{ steps.ndk-cache.outputs.cache-hit }}" != "true" ]; then
+            SDKMANAGER="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin | sort -V | tail -1)/sdkmanager"
+            yes | "$SDKMANAGER" --install "ndk;$NDK_VERSION" > /dev/null
+          fi
           echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
 
       - if: steps.v.outputs.exists == 'false'
@@ -63,6 +87,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          shared-key: android-aarch64
+          cache-on-failure: true
 
       - name: Signing key
         if: steps.v.outputs.exists == 'false'
@@ -87,9 +113,23 @@ jobs:
           cp src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk \
             "out/schools.bye-${{ steps.v.outputs.version }}.apk"
 
-      - name: Security report (SHA-256, trackers, VirusTotal)
+      # Notes: what changed (commits since the previous release) first, then the checks.
+      - name: Release notes
         if: steps.v.outputs.exists == 'false'
-        run: python3 .github/scripts/report.py "out/schools.bye-${{ steps.v.outputs.version }}.apk" > notes.md
+        run: |
+          PREV=$(git tag --list 'v*' --sort=-v:refname | grep -vx "${{ steps.v.outputs.tag }}" | head -1)
+          RANGE=${PREV:+$PREV..}HEAD
+          {
+            echo "### Что нового"
+            echo
+            git log --no-merges --format='%s' "$RANGE" \
+              | grep -vE '^(ci|chore|deps|build|docs)(\(.*\))?:' \
+              | sed -E 's/^[a-z]+(\([^)]*\))?: //; s/^/- /' || true
+            echo
+            [ -n "$PREV" ] && echo "[Все изменения]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$PREV...${{ steps.v.outputs.tag }})" && echo
+            python3 .github/scripts/report.py "out/schools.bye-${{ steps.v.outputs.version }}.apk"
+          } > notes.md
+          cat notes.md
         env:
           VT_API_KEY: ${{ secrets.VT_API_KEY }}
 
@@ -100,5 +140,4 @@ jobs:
           tag_name: ${{ steps.v.outputs.tag }}
           name: schools.bye ${{ steps.v.outputs.version }}
           body_path: notes.md
-          generate_release_notes: true
           files: out/*.apk
