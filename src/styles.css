@@ -718,7 +718,8 @@ body.sheet-open .sheet {
   font-weight: 700;
   font-size: 14px;
 }
-.gap-cell { opacity: 0; }
+.goal-tag { background: color-mix(in oklch, var(--accent) 18%, transparent); color: var(--accent); }
+.cur-subj .half-tag + .half-tag { margin-left: 4px; }
 
 .plan-mark {
   display: inline-flex;

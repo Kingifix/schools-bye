@@ -850,8 +850,9 @@ struct FinalRow {
     subject: String,
     /// Full subject name, if the site gives one.
     full: Option<String>,
-    /// Graded per half-year: halves are in columns 2 and 4, columns 1 and 3 stay empty.
-    half: bool,
+    /// Per half of the year: graded once per half-year. Its mark sits in column 2 / 4,
+    /// column 1 / 3 stays empty. A subject can switch between halves.
+    halves: [bool; 2],
     quarters: Vec<FinalCell>,
     year: FinalCell,
 }
@@ -1046,13 +1047,40 @@ fn fill_cell(cell: &mut FinalCell, marks: Vec<u8>) {
     }
 }
 
-/// A subject is graded per half-year if it has one lesson a week. A teacher-set mark in
-/// quarter 1 or 3 proves otherwise.
-fn is_half_year(row: &FinalRow, data: &[Option<QuarterData>]) -> bool {
-    if [0, 2].iter().any(|&i| is_set(&row.quarters[i])) {
+/// Half `h` of a subject is graded once if it has one lesson a week in that half (the
+/// timetable can change between halves). Teacher-set marks decide when they can: both
+/// quarters set -> per quarter; a finished half with one mark -> per half.
+fn is_half(row: &FinalRow, h: usize, data: &[Option<QuarterData>], current: Option<usize>) -> bool {
+    let (a, b) = (2 * h, 2 * h + 1);
+    let (sa, sb) = (is_set(&row.quarters[a]), is_set(&row.quarters[b]));
+    if sa && sb {
         return false;
     }
-    lessons_per_week(data, &row_names(row)).is_some_and(|n| n <= 1)
+    let weekly = lessons_per_week(&data[a..=b], &row_names(row));
+    let finished = current.is_none_or(|c| b < c);
+    if sa || sb {
+        if finished {
+            return weekly.is_none_or(|n| n <= 1);
+        }
+        if sa {
+            return false;
+        }
+    }
+    weekly.is_some_and(|n| n <= 1)
+}
+
+/// Timetable of a quarter that hasn't started: its first two weeks, lessons only.
+async fn peek_quarter(state: &AppState, s: &Session, quarter_id: &str) -> Result<QuarterData, String> {
+    let base = format!("{}/pupil/{}/dnevnik/quarter/{}", s.domain, s.pupil_id, quarter_id);
+    let mut data = QuarterData::default();
+    let first = parse::parse_week(&state.get(&base).await?, &s.domain);
+    data.add(Vec::new(), parse::week_lessons(&first));
+    if let Some(next) = first.next_week_id.as_deref() {
+        tokio::time::sleep(CRAWL_DELAY).await;
+        let week = parse::parse_week(&state.get(&format!("{base}/week/{next}")).await?, &s.domain);
+        data.add(Vec::new(), parse::week_lessons(&week));
+    }
+    Ok(data)
 }
 
 #[tauri::command]
@@ -1096,7 +1124,7 @@ async fn fetch_final(
         .map(|r| FinalRow {
             subject: r.subject.clone(),
             full: r.full.clone(),
-            half: false,
+            halves: [false; 2],
             quarters: r.quarters.iter().map(|c| c.as_ref().map(official_cell).unwrap_or_default()).collect(),
             year: r.year.as_ref().map(official_cell).unwrap_or_default(),
         })
@@ -1110,6 +1138,16 @@ async fn fetch_final(
     if let Some(ci) = current {
         data[ci] = Some(crawl_quarter(&app, &state, &s, ci, &quarters[ci].id).await?);
     }
+    // Quarters ahead: only their timetable, to know which subjects are weekly-once there.
+    for (i, q) in quarters.iter().enumerate() {
+        if !started(i) {
+            match peek_quarter(&state, &s, &q.id).await {
+                Ok(d) => data[i] = Some(d),
+                Err(e) if e == SESSION_EXPIRED => return Err(e),
+                Err(_) => {}
+            }
+        }
+    }
     for (i, q) in quarters.iter().enumerate() {
         if data[i].is_some() || !started(i) {
             continue;
@@ -1118,7 +1156,7 @@ async fn fetch_final(
         // Half-year subjects need both quarters of the half while its mark isn't set yet.
         let pair = i ^ 1;
         let half_open = current == Some(pair)
-            || rows.iter().any(|r| !is_set(&r.quarters[i]) && !is_set(&r.quarters[pair]) && is_half_year(r, &data));
+            || rows.iter().any(|r| !is_set(&r.quarters[i]) && !is_set(&r.quarters[pair]) && is_half(r, i / 2, &data, current));
         if quarter_set && !half_open {
             continue;
         }
@@ -1133,7 +1171,7 @@ async fn fetch_final(
             rows.push(FinalRow {
                 subject,
                 full: None,
-                half: false,
+                halves: [false; 2],
                 quarters: vec![FinalCell::default(); 4],
                 year: FinalCell::default(),
             });
@@ -1153,11 +1191,11 @@ async fn fetch_final(
                 })
                 .unwrap_or_default()
         };
-        row.half = is_half_year(row, &data);
-        if row.half {
-            // Halves live in columns 2 and 4; the site may put the mark into either column.
-            for h in 0..2 {
-                let (a, b) = (2 * h, 2 * h + 1);
+        row.halves = [is_half(row, 0, &data, current), is_half(row, 1, &data, current)];
+        for h in 0..2 {
+            let (a, b) = (2 * h, 2 * h + 1);
+            if row.halves[h] {
+                // The half's mark lives in column b; the site may put it into either column.
                 if !is_set(&row.quarters[b]) && (is_set(&row.quarters[a]) || row.quarters[b].value.is_none()) {
                     row.quarters[b] = std::mem::take(&mut row.quarters[a]);
                 }
@@ -1165,10 +1203,9 @@ async fn fetch_final(
                 let mut marks = marks_in(a);
                 marks.extend(marks_in(b));
                 fill_cell(&mut row.quarters[b], marks);
-            }
-        } else {
-            for i in 0..4 {
-                fill_cell(&mut row.quarters[i], marks_in(i));
+            } else {
+                fill_cell(&mut row.quarters[a], marks_in(a));
+                fill_cell(&mut row.quarters[b], marks_in(b));
             }
         }
     }
@@ -1203,9 +1240,10 @@ async fn fetch_final(
             .into_iter()
             .map(|subject| {
                 let marks = cur.marks_of(&subject);
+                let h = ci / 2;
                 let half = match rows.iter().find(|r| row_matches(r, &subject)) {
-                    Some(r) => r.half,
-                    None => lessons_per_week(&data, &[&subject]).is_some_and(|n| n <= 1),
+                    Some(r) => r.halves[h],
+                    None => lessons_per_week(&data[2 * h..=2 * h + 1], &[&subject]).is_some_and(|n| n <= 1),
                 };
                 let prev = match (half, prev_data) {
                     (true, Some(d)) => d.marks_of(&subject),

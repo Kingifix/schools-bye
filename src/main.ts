@@ -78,8 +78,10 @@ interface FinalCell {
 interface FinalRow {
   subject: string;
   full: string | null;
-  /** Graded per half-year: halves are in columns 2 and 4. */
-  half: boolean;
+  /** Per half of the year: graded once (mark in column 2 / 4, column 1 / 3 empty). */
+  halves?: [boolean, boolean];
+  /** Older cached reports. */
+  half?: boolean;
   quarters: FinalCell[];
   year: FinalCell;
 }
@@ -877,20 +879,30 @@ async function showAttachments(url: string, share = false) {
 let finalLoading = false;
 let lastReport: FinalReport | null = store.get<FinalReport>("last-final");
 
+const halvesOf = (r: FinalRow): [boolean, boolean] => r.halves ?? [!!r.half, !!r.half];
+
 function periodLabel(row: FinalRow, col: number): string {
   if (col === 4) return "Год";
-  return row.half ? `${(col >> 1) + 1} полугодие` : chapterLabel(col);
+  return halvesOf(row)[col >> 1] ? `${(col >> 1) + 1} полугодие` : chapterLabel(col);
 }
 
-function cellHtml(c: FinalCell, rowIdx: number, col: number): string {
-  if (!c.value) return `<td class="empty-cell">·</td>`;
+function cellHtml(c: FinalCell, rowIdx: number, col: number, span = false): string {
+  const td = span ? ` colspan="2" class="half-cell${c.value ? "" : " empty-cell"}"` : c.value ? "" : ` class="empty-cell"`;
+  if (!c.value) return `<td${td}>·</td>`;
   const cls = `${markLevel(c.num)}${c.computed ? " computed" : ""}`;
-  return `<td><button class="final-chip ${cls}" data-row="${rowIdx}" data-col="${col}">${escapeHtml(c.value)}</button></td>`;
+  return `<td${td}><button class="final-chip ${cls}" data-row="${rowIdx}" data-col="${col}">${escapeHtml(c.value)}</button></td>`;
 }
 
 function rowCells(r: FinalRow, i: number): string {
-  // Half-year subjects keep four columns: halves sit in 2 and 4, 1 and 3 stay blank.
-  return r.quarters.map((c, q) => (r.half && q % 2 === 0 ? `<td class="gap-cell"></td>` : cellHtml(c, i, q))).join("");
+  // A half graded once spans both of its quarter columns; its mark is in the second one.
+  const halves = halvesOf(r);
+  return [0, 1]
+    .map((h) =>
+      halves[h]
+        ? cellHtml(r.quarters[2 * h + 1], i, 2 * h + 1, true)
+        : cellHtml(r.quarters[2 * h], i, 2 * h) + cellHtml(r.quarters[2 * h + 1], i, 2 * h + 1),
+    )
+    .join("");
 }
 
 // ---------- goal (target mark for the current period) ----------
@@ -898,6 +910,10 @@ function rowCells(r: FinalRow, i: number): string {
 let goal: number | null = store.get<number>("goal");
 /** subject -> chosen plan key ("even+1", "only:9"), shown instead of the cheapest plan. */
 let goalPins: Record<string, string> = store.get<Record<string, string>>("goal-pins") ?? {};
+/** subject -> own goal (0 = no goal for it); overrides the common one. */
+let subjectGoals: Record<string, number> = store.get<Record<string, number>>("subject-goals") ?? {};
+const goalOf = (subject: string): number | null =>
+  subject in subjectGoals ? subjectGoals[subject] || null : goal;
 const MAX_PLAN = 40;
 const CHECK_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`;
 
@@ -978,6 +994,7 @@ const allMarks = (s: SubjectMarks) => [...(s.prev ?? []), ...s.marks];
 const sumOf = (a: number[]) => a.reduce((x, y) => x + y, 0);
 
 function goalHint(s: SubjectMarks, i: number): string {
+  const goal = goalOf(s.subject);
   if (goal === null) return "";
   const all = allMarks(s);
   const [sum, n] = [sumOf(all), all.length];
@@ -1004,7 +1021,7 @@ function chooseGoal() {
     .join("");
   openSheet(
     `<div class="sheet-title">Целевая отметка</div>
-     <p class="sheet-sub">Покажу у каждого предмета, какие отметки нужно получить, чтобы выйти на цель.</p>
+     <p class="sheet-sub">Покажу у каждого предмета, какие отметки нужно получить, чтобы выйти на цель. Зажми предмет, чтобы задать ему свою цель.</p>
      <div class="goal-grid">${opts}</div>
      <button class="goal-off" data-url="off">Без цели</button>`,
     (el) => {
@@ -1018,9 +1035,32 @@ function chooseGoal() {
   );
 }
 
+function chooseSubjectGoal(s: SubjectMarks) {
+  const own = s.subject in subjectGoals;
+  const cur = goalOf(s.subject);
+  const opts = [10, 9, 8, 7, 6, 5, 4]
+    .map((g) => `<button class="goal-opt ${markLevel(g)}${own && g === cur ? " picked" : ""}" data-url="${g}">${g}</button>`)
+    .join("");
+  openSheet(
+    `<div class="sheet-title">Цель · ${escapeHtml(s.subject)}</div>
+     <p class="sheet-sub">Только для этого предмета.</p>
+     <div class="goal-grid">${opts}</div>
+     <button class="goal-off${own ? "" : " picked"}" data-url="common">Как у всех${goal === null ? " (без цели)" : ` (${goal})`}</button>
+     <button class="goal-off${own && cur === null ? " picked" : ""}" data-url="off">Без цели</button>`,
+    (el) => {
+      const v = el.dataset.url!;
+      if (v === "common") delete subjectGoals[s.subject];
+      else subjectGoals[s.subject] = v === "off" ? 0 : Number(v);
+      store.set("subject-goals", subjectGoals);
+      closeSheet();
+      if (lastReport) renderCurrent(lastReport);
+    },
+  );
+}
+
 function showGoalDetails(s: SubjectMarks) {
-  if (goal === null) return;
-  const g = goal;
+  const g = goalOf(s.subject);
+  if (g === null) return;
   const all = allMarks(s);
   const [sum, n] = [sumOf(all), all.length];
   const avg = n ? sum / n : 0;
@@ -1059,7 +1099,7 @@ function showGoalDetails(s: SubjectMarks) {
     openSheet(
       `${title}${sub}${
         rows || `<p class="sheet-sub">Нужно больше ${MAX_PLAN} отметок.</p>`
-      }<p class="sheet-sub plan-foot">Выбери вариант — он будет показан в списке.</p>`,
+      }<p class="sheet-sub plan-foot">Выбери вариант — он будет показан в списке. Зажми предмет, чтобы сменить его цель.</p>`,
       (el) => {
         const key = el.dataset.url!;
         if (key === list[0]?.key) delete goalPins[s.subject];
@@ -1079,6 +1119,15 @@ $("current-wrap").addEventListener("click", (e) => {
   const s = btn && lastReport?.current?.subjects[Number(btn.dataset.goal)];
   if (s) showGoalDetails(s);
 });
+// Long press on a subject (its marks or the hint) → its own goal.
+onLongPress(
+  $("current-wrap"),
+  (row) => {
+    const s = lastReport?.current?.subjects[Number(row.dataset.i)];
+    if (s) chooseSubjectGoal(s);
+  },
+  ".cur-row",
+);
 
 function markChips(marks: number[], extra = ""): string {
   return marks.map((m) => `<span class="cur-mark ${markLevel(m)}${extra}">${m}</span>`).join("");
@@ -1103,9 +1152,13 @@ function renderCurrent(report: FinalReport) {
       const prev = s.prev ?? [];
       const marks =
         markChips(prev, " prev") + (prev.length && s.marks.length ? `<span class="cur-sep"></span>` : "") + markChips(s.marks);
-      return `<div class="cur-row">
+      const own = s.subject in subjectGoals ? goalOf(s.subject) : undefined;
+      const tags =
+        (s.half ? `<span class="half-tag">полугодие</span>` : "") +
+        (own !== undefined ? `<span class="half-tag goal-tag">${own === null ? "без цели" : `цель ${own}`}</span>` : "");
+      return `<div class="cur-row" data-i="${i}">
         <div class="cur-head">
-          <span class="cur-subj">${escapeHtml(s.subject)}${s.half ? `<span class="half-tag">полугодие</span>` : ""}</span>
+          <span class="cur-subj">${escapeHtml(s.subject)}${tags}</span>
           <span class="cur-avg ${markLevel(s.avg)}">${s.avg.toFixed(2)}</span>
         </div>
         <div class="cur-marks">${marks}${goalHint(s, i)}</div>
@@ -1126,7 +1179,7 @@ function renderFinal(report: FinalReport) {
   const body = report.rows
     .map(
       (r, i) =>
-        `<tr><th class="subj">${escapeHtml(r.subject)}${r.half ? `<span class="half-tag">полугодие</span>` : ""}</th>${rowCells(
+        `<tr><th class="subj">${escapeHtml(r.subject)}</th>${rowCells(
           r,
           i,
         )}${cellHtml(r.year, i, 4)}</tr>`,
@@ -1151,7 +1204,7 @@ $("final-table-wrap").addEventListener("click", (e) => {
   } else if (cell.marks.length) {
     detail = `${chips}<p class="sheet-sub">${cell.count} отм. · среднее ${cell.value}</p>`;
   } else if (cell.computed) {
-    detail = `<p class="sheet-sub">Среднее по ${row.half && col === 4 ? "полугодиям" : "четвертям"}: ${cell.value}</p>`;
+    detail = `<p class="sheet-sub">Среднее по ${col === 4 && halvesOf(row).some(Boolean) ? (halvesOf(row).every(Boolean) ? "полугодиям" : "четвертям и полугодиям") : "четвертям"}: ${cell.value}</p>`;
   } else {
     detail = `<p class="sheet-sub">Итоговая отметка: ${cell.value}</p>`;
   }
