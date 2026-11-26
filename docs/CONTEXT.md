@@ -23,8 +23,11 @@
 ## Релиз
 1. Поднять версию в `package.json` **и** `src-tauri/Cargo.toml` (tauri.conf.json читает package.json).
 2. Push в `main` → Actions соберёт подписанный APK, создаст `vX.Y.Z`.
-3. Заметки релиза автоматические: «Что нового» = сабжекты коммитов с прошлого тега (`ci:`/`chore:`/`deps:`/`build:`/`docs:` скрыты, префикс `feat:`/`fix:` срезается) → ссылка на diff → блок проверок. **Сабжекты пользовательских коммитов — по-русски, понятно школьнику; подробности в теле.**
+3. Заметки релиза: если есть `.github/notes/vX.Y.Z.md` — «Что нового» берётся из него (коротким списком, без пафоса; писать до пуша). Иначе автоматически: «Что нового» = сабжекты коммитов с прошлого тега (`ci:`/`chore:`/`deps:`/`build:`/`docs:` скрыты, префикс `feat:`/`fix:` срезается) → ссылка на diff → блок проверок. **Сабжекты пользовательских коммитов — по-русски, понятно школьнику; подробности в теле.**
 4. Кэши CI: rust-cache, gradle (setup-java), bun, NDK.
+5. Версии: новые функции → minor (0.6.0), исправления → patch (0.6.1). Только X.Y.Z.
+6. Секреты Actions: `ANDROID_KEYSTORE_BASE64` (`base64 -w0 my-release-key.jks`), `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`, `VT_API_KEY`.
+7. Локально: `bun install && bun tauri android build --apk --target aarch64` → `src-tauri/gen/android/app/build/outputs/apk/universal/release/`. Подпись: `src-tauri/gen/android/keystore.properties` (не в git). Иконка: `bun tauri icon src-tauri/icon-src/icon.svg`.
 
 ## Ловушки
 - Ключ подписи (`*.jks`, `keystore.properties`) не в git; смена ключа ломает самообновление.

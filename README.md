@@ -2,33 +2,32 @@
 
 # schools.bye
 
-Быстрый неофициальный клиент дневника [schools.by](https://schools.by) для Android (Tauri 2 + Rust + TypeScript).
+Быстрый и удобный дневник [schools.by](https://schools.by) для Android. Неофициальное приложение.
 
-- расписание и д/з по неделям, темы уроков и заметки учителя, вложения;
-- новые отметки;
-- итоги: все отметки текущей четверти, четвертные/полугодовые и годовые (свои средние, пока учитель не выставил), цель — какие отметки нужно получить, чтобы выйти на нужную.
+## Что умеет
 
-## Релиз
+- Расписание и домашние задания по неделям
+- Темы уроков, заметки учителя и прикреплённые файлы
+- Новые отметки — сразу видно, что поставили
+- Итоги: отметки за четверть, полугодие и год, средний балл
+- Цель по каждому предмету — какие отметки нужны, чтобы выйти на желаемую
+- Свои цвета отметок
+- Обновляется само
 
-Версия берётся из `package.json` (её же читает `tauri.conf.json`; в `src-tauri/Cargo.toml` держим такую же).
-Поднять версию → push в `main` → GitHub Actions соберёт подписанный APK и выложит релиз `vX.Y.Z`.
+## Установка
 
-Секреты репозитория (Settings → Secrets and variables → Actions):
+1. Открой [последний релиз](../../releases/latest) и скачай файл `.apk`.
+2. Открой его на телефоне. Если Android спросит — разреши установку из этого источника.
+3. Войди с логином и паролем от schools.by.
 
-| секрет | что это |
-| --- | --- |
-| `ANDROID_KEYSTORE_BASE64` | `base64 -w0 my-release-key.jks` |
-| `ANDROID_KEY_ALIAS` | alias ключа |
-| `ANDROID_KEY_PASSWORD` | пароль хранилища и ключа |
+Нужен Android 7 или новее.
 
-## Локальная сборка (arm64)
+## Безопасность
 
-```bash
-source /d/dev-tools/tauri-env.sh
-bun install
-bun tauri android build --apk --target aarch64
-# -> src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
-```
+- Логин и пароль отправляются только на schools.by. Пароль на телефоне не хранится.
+- Каждую версию перед публикацией проверяют на трекеры и через VirusTotal — результаты есть в описании релиза.
+- Приложение проверяет подлинность обновления перед установкой.
 
-Подпись: `src-tauri/gen/android/keystore.properties` (не в git) → `my-release-key.jks`.
-Иконка: `src-tauri/icon-src/icon.svg` → `bun tauri icon src-tauri/icon-src/icon.svg`.
+---
+
+Для разработчиков: [docs/CONTEXT.md](docs/CONTEXT.md).
