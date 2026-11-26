@@ -1069,16 +1069,22 @@ fn is_half(row: &FinalRow, h: usize, data: &[Option<QuarterData>], current: Opti
     weekly.is_some_and(|n| n <= 1)
 }
 
-/// Timetable of a quarter that hasn't started: its first two weeks, lessons only.
+/// Timetable of a quarter that hasn't started (lessons only): walks from its first page
+/// until two weeks with lessons are seen — the first week may be short or empty.
 async fn peek_quarter(state: &AppState, s: &Session, quarter_id: &str) -> Result<QuarterData, String> {
     let base = format!("{}/pupil/{}/dnevnik/quarter/{}", s.domain, s.pupil_id, quarter_id);
     let mut data = QuarterData::default();
-    let first = parse::parse_week(&state.get(&base).await?, &s.domain);
-    data.add(Vec::new(), parse::week_lessons(&first));
-    if let Some(next) = first.next_week_id.as_deref() {
-        tokio::time::sleep(CRAWL_DELAY).await;
-        let week = parse::parse_week(&state.get(&format!("{base}/week/{next}")).await?, &s.domain);
+    let mut week = parse::parse_week(&state.get(&base).await?, &s.domain);
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..5 {
         data.add(Vec::new(), parse::week_lessons(&week));
+        if data.weekly.len() >= 2 {
+            break;
+        }
+        let Some(next) = week.next_week_id.clone().filter(|n| !seen.contains(n)) else { break };
+        seen.push(next.clone());
+        tokio::time::sleep(CRAWL_DELAY).await;
+        week = parse::parse_week(&state.get(&format!("{base}/week/{next}")).await?, &s.domain);
     }
     Ok(data)
 }

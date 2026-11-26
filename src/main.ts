@@ -886,22 +886,17 @@ function periodLabel(row: FinalRow, col: number): string {
   return halvesOf(row)[col >> 1] ? `${(col >> 1) + 1} полугодие` : chapterLabel(col);
 }
 
-function cellHtml(c: FinalCell, rowIdx: number, col: number, span = false): string {
-  const td = span ? ` colspan="2" class="half-cell${c.value ? "" : " empty-cell"}"` : c.value ? "" : ` class="empty-cell"`;
-  if (!c.value) return `<td${td}>·</td>`;
+function cellHtml(c: FinalCell, rowIdx: number, col: number): string {
+  if (!c.value) return `<td class="empty-cell">·</td>`;
   const cls = `${markLevel(c.num)}${c.computed ? " computed" : ""}`;
-  return `<td${td}><button class="final-chip ${cls}" data-row="${rowIdx}" data-col="${col}">${escapeHtml(c.value)}</button></td>`;
+  return `<td><button class="final-chip ${cls}" data-row="${rowIdx}" data-col="${col}">${escapeHtml(c.value)}</button></td>`;
 }
 
 function rowCells(r: FinalRow, i: number): string {
-  // A half graded once spans both of its quarter columns; its mark is in the second one.
+  // A half graded once: its mark stands in the half's second column (2 / 4), the first stays blank.
   const halves = halvesOf(r);
-  return [0, 1]
-    .map((h) =>
-      halves[h]
-        ? cellHtml(r.quarters[2 * h + 1], i, 2 * h + 1, true)
-        : cellHtml(r.quarters[2 * h], i, 2 * h) + cellHtml(r.quarters[2 * h + 1], i, 2 * h + 1),
-    )
+  return r.quarters
+    .map((c, q) => (halves[q >> 1] && q % 2 === 0 ? `<td class="blank-cell"></td>` : cellHtml(c, i, q)))
     .join("");
 }
 
