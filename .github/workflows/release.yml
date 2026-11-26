@@ -122,9 +122,13 @@ jobs:
           {
             echo "### Что нового"
             echo
+            # Hand-written notes for this version win over the commit list.
+            HAND=".github/notes/${{ steps.v.outputs.tag }}.md"
+            if [ -f "$HAND" ]; then cat "$HAND"; else
             git log --no-merges --format='%s' "$RANGE" \
               | grep -vE '^(ci|chore|deps|build|docs)(\(.*\))?:' \
               | sed -E 's/^[a-z]+(\([^)]*\))?: //; s/^/- /' || true
+            fi
             echo
             [ -n "$PREV" ] && echo "[Все изменения]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$PREV...${{ steps.v.outputs.tag }})" && echo
             python3 .github/scripts/report.py "out/schools.bye-${{ steps.v.outputs.version }}.apk"

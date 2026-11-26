@@ -1261,7 +1261,9 @@ interface UpdateInfo {
 let update: UpdateInfo | null = store.get<UpdateInfo>("update-info") ?? null;
 let updating = false;
 // One unauthenticated GitHub request; their limit is 60/hour, so every 30 min is safe.
-const UPDATE_CHECK_EVERY = 2 * 60_000;
+const UPDATE_CHECK_EVERY = 10 * 60_000;
+/** On (re)open: check a few seconds in, unless we just did. */
+const UPDATE_REOPEN_GAP = 60_000;
 
 /** Minimal Markdown for release notes: headings, lists, **bold**, `code`, [links](…), bare URLs. */
 function markdown(src: string): string {
@@ -1305,9 +1307,9 @@ function renderBanner(progress?: number) {
     : `<span class="ub-dot"></span><span class="ub-text">Доступна версия ${escapeHtml(update.version)}</span><span class="ub-go">Что нового</span>`;
 }
 
-async function checkUpdate(manual = false) {
+async function checkUpdate(manual = false, gap = UPDATE_CHECK_EVERY) {
   const last = store.get<number>("update-check") ?? 0;
-  if (!manual && Date.now() - last < UPDATE_CHECK_EVERY) return renderBanner();
+  if (!manual && Date.now() - last < gap) return renderBanner();
   try {
     update = await invoke<UpdateInfo | null>("check_update");
     store.set("update-check", Date.now());
@@ -1359,9 +1361,14 @@ listen<number>("update-progress", (e) => {
 });
 $("update-banner").addEventListener("click", showUpdate);
 // The WebView survives in the background, so startApp() alone would check only once per cold start.
+let reopenTimer = 0;
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") checkUpdate();
+  clearTimeout(reopenTimer);
+  if (document.visibilityState === "visible") reopenTimer = window.setTimeout(() => checkUpdate(false, UPDATE_REOPEN_GAP), 3000);
 });
+setInterval(() => {
+  if (document.visibilityState === "visible") checkUpdate();
+}, UPDATE_CHECK_EVERY);
 
 let appVersion = "";
 invoke<string>("app_version")
@@ -1510,7 +1517,7 @@ function startApp() {
   fetchWeek(null, null, { scrollToToday: true });
   // After the first page is in: one request to GitHub, not to schools.by.
   renderBanner();
-  setTimeout(() => checkUpdate(), 4000);
+  setTimeout(() => checkUpdate(false, UPDATE_REOPEN_GAP), 3000);
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
