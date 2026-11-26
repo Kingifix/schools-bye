@@ -117,6 +117,8 @@ struct CachedWeek {
 
 /// Bumped when CachedWeek gains data old entries lack (forces a one-time refetch).
 const WEEKS_KEY: &str = "weeks_v2";
+/// Timetables of quarters ahead, by quarter id: they rarely change, so fetched once (until a full recheck).
+const PEEKS_KEY: &str = "peeks_v1";
 
 struct AppState {
     client: reqwest::Client,
@@ -698,6 +700,40 @@ fn trusted_update_url(u: &str) -> bool {
     })
 }
 
+/// "What's new" part of release notes: without its heading, diff link and checks.
+fn whats_new(body: &str) -> &str {
+    let body = body.trim_start();
+    let body = body.strip_prefix("### Что нового").unwrap_or(body);
+    let end = ["[Все изменения]", "### Проверка"].iter().filter_map(|m| body.find(m)).min().unwrap_or(body.len());
+    body[..end].trim()
+}
+
+/// Notes of every release the user skipped (newest first), then the latest one's checks.
+/// One extra request, only when more than one version is missing.
+async fn skipped_notes(state: &AppState, cur: (u32, u32, u32), latest: &serde_json::Value) -> Option<String> {
+    let url = RELEASES_API.trim_end_matches("/latest").to_string() + "?per_page=30";
+    let resp = state.client.get(url).header(reqwest::header::ACCEPT, "application/vnd.github+json").send().await.ok()?;
+    let list: Vec<serde_json::Value> = serde_json::from_str(&resp.error_for_status().ok()?.text().await.ok()?).ok()?;
+    let mut skipped: Vec<((u32, u32, u32), &serde_json::Value)> = list
+        .iter()
+        .filter(|r| !r["draft"].as_bool().unwrap_or(false) && !r["prerelease"].as_bool().unwrap_or(false))
+        .filter_map(|r| parse_version(r["tag_name"].as_str()?).filter(|v| *v > cur).map(|v| (v, r)))
+        .collect();
+    if skipped.len() < 2 {
+        return None;
+    }
+    skipped.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut out: Vec<String> = skipped
+        .iter()
+        .map(|((a, b, c), r)| format!("### Версия {a}.{b}.{c}\n\n{}", whats_new(r["body"].as_str().unwrap_or_default())))
+        .collect();
+    let body = latest["body"].as_str().unwrap_or_default();
+    if let Some(i) = body.find("### Проверка") {
+        out.push(body[i..].trim().to_string());
+    }
+    Some(out.join("\n\n"))
+}
+
 /// "v0.5.2" / "0.5.2" -> (0, 5, 2)
 fn parse_version(v: &str) -> Option<(u32, u32, u32)> {
     let mut it = v.trim().trim_start_matches('v').split('.').map(|p| p.parse::<u32>().ok());
@@ -721,10 +757,10 @@ async fn check_update(app: tauri::AppHandle, state: tauri::State<'_, AppState>) 
     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     let tag = v["tag_name"].as_str().unwrap_or_default();
     let current = app.package_info().version.to_string();
-    match (parse_version(tag), parse_version(&current)) {
-        (Some(latest), Some(cur)) if latest > cur => {}
+    let cur = match (parse_version(tag), parse_version(&current)) {
+        (Some(latest), Some(cur)) if latest > cur => cur,
         _ => return Ok(None),
-    }
+    };
     let Some(asset) = v["assets"]
         .as_array()
         .and_then(|a| a.iter().find(|x| x["name"].as_str().is_some_and(|n| n.ends_with(".apk"))))
@@ -739,9 +775,13 @@ async fn check_update(app: tauri::AppHandle, state: tauri::State<'_, AppState>) 
     else {
         return Ok(None);
     };
+    let notes = match skipped_notes(&state, cur, &v).await {
+        Some(n) => n,
+        None => v["body"].as_str().unwrap_or_default().to_string(),
+    };
     Ok(Some(UpdateInfo {
         version: tag.trim_start_matches('v').to_string(),
-        notes: v["body"].as_str().unwrap_or_default().to_string(),
+        notes,
         url: asset["browser_download_url"].as_str().unwrap_or_default().to_string(),
         size: asset["size"].as_u64().unwrap_or(0),
         sha256: sha256.to_ascii_lowercase(),
@@ -915,7 +955,7 @@ fn computed_cell(marks: &[u8]) -> FinalCell {
 }
 
 /// Marks and lesson counts collected from one quarter.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 struct QuarterData {
     marks: Vec<(String, Vec<u8>)>,
     /// Lessons per subject, one entry per week.
@@ -1101,6 +1141,9 @@ async fn fetch_final(
         // Full recheck: drop cached quarters and weeks, fetch everything again.
         *state.quarters.lock().unwrap() = None;
         *state.weeks.lock().unwrap() = Some(HashMap::new());
+        if let Ok(st) = app.store("weeks.json") {
+            st.delete(PEEKS_KEY);
+        }
     }
 
     let quarters = {
@@ -1145,13 +1188,36 @@ async fn fetch_final(
         data[ci] = Some(crawl_quarter(&app, &state, &s, ci, &quarters[ci].id).await?);
     }
     // Quarters ahead: only their timetable, to know which subjects are weekly-once there.
+    // Cached on disk: re-fetching them added seconds to every open. Sequential — the site bans bursts.
     for (i, q) in quarters.iter().enumerate() {
-        if !started(i) {
-            match peek_quarter(&state, &s, &q.id).await {
-                Ok(d) => data[i] = Some(d),
-                Err(e) if e == SESSION_EXPIRED => return Err(e),
-                Err(_) => {}
+        if started(i) {
+            continue;
+        }
+        let store = app.store("weeks.json").ok();
+        let mut peeks: HashMap<String, QuarterData> =
+            store.as_ref().and_then(|st| st.get(PEEKS_KEY)).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        let cached = peeks.get(&q.id).cloned();
+        let fresh = cached.is_none();
+        let r = match cached {
+            Some(d) => Ok(d),
+            None => {
+                tokio::time::sleep(CRAWL_DELAY).await;
+                peek_quarter(&state, &s, &q.id).await
             }
+        };
+        match r {
+            Ok(d) => {
+                if fresh {
+                    if let Some(st) = &store {
+                        peeks.insert(q.id.clone(), d.clone());
+                        st.set(PEEKS_KEY, serde_json::to_value(&peeks).unwrap_or_default());
+                        let _ = st.save();
+                    }
+                }
+                data[i] = Some(d);
+            }
+            Err(e) if e == SESSION_EXPIRED => return Err(e),
+            Err(_) => {}
         }
     }
     for (i, q) in quarters.iter().enumerate() {
