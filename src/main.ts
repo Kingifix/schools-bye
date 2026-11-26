@@ -134,13 +134,18 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
 
-/** red: ≤7, yellow: 8, green: 9–10 (averages are rounded first). */
+type MarkColor = "red" | "yellow" | "green";
+const MARK_COLORS: MarkColor[] = ["red", "yellow", "green"];
+/** Default: red ≤7, yellow 8, green 9–10. Overridable in settings. */
+const defaultColor = (m: number): MarkColor => (m <= 7 ? "red" : m === 8 ? "yellow" : "green");
+let markColors: Record<string, MarkColor> = store.get<Record<string, MarkColor>>("mark-colors") ?? {};
+const colorOf = (m: number): MarkColor => markColors[m] ?? defaultColor(m);
+
+/** Averages are rounded first. */
 function markLevel(value: number | null): string {
   if (value === null || Number.isNaN(value)) return "mark-neutral";
-  const r = Math.round(value);
-  if (r <= 7) return "mark-red";
-  if (r === 8) return "mark-yellow";
-  return "mark-green";
+  const r = Math.min(10, Math.max(1, Math.round(value)));
+  return `mark-${colorOf(r)}`;
 }
 
 function markNumbers(mark: string): number[] {
@@ -661,7 +666,9 @@ function isToday(day: Day): boolean {
   return currentIsLanding && day.day_of_week.toLowerCase() === wd;
 }
 
+let shownDays: Day[] | null = null;
 function renderSchedule(days: Day[], scrollToToday: boolean) {
+  shownDays = days;
   const container = $("schedule");
   const frag = document.createDocumentFragment();
   let todayHeader: HTMLElement | null = null;
@@ -1261,7 +1268,7 @@ function showUpdate() {
   const size = u.size ? ` · ${(u.size / 1048576).toFixed(1)} МБ` : "";
   openSheet(
     `<div class="sheet-title">Версия ${escapeHtml(u.version)}</div>
-     <p class="sheet-sub">Сейчас ${escapeHtml($("version-btn").dataset.v ?? "")}${size}</p>
+     <p class="sheet-sub">Сейчас ${escapeHtml(appVersion)}${size}</p>
      ${u.notes ? `<div class="update-notes">${markdown(u.notes)}</div>` : ""}
      <button class="update-go" data-url="go">Обновить</button>`,
     () => {
@@ -1292,16 +1299,15 @@ listen<number>("update-progress", (e) => {
   if (updating) renderBanner(e.payload);
 });
 $("update-banner").addEventListener("click", showUpdate);
-$("version-btn").addEventListener("click", () => checkUpdate(true).then(() => update && showUpdate()));
 // The WebView survives in the background, so startApp() alone would check only once per cold start.
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") checkUpdate();
 });
 
+let appVersion = "";
 invoke<string>("app_version")
   .then((v) => {
-    const b = $("version-btn");
-    b.dataset.v = v;
+    appVersion = v;
     // Just updated: the cached "new version" is the one running now.
     if (store.get<string>("update-for") !== v) {
       store.set("update-for", v);
@@ -1310,9 +1316,85 @@ invoke<string>("app_version")
       update = null;
       renderBanner();
     }
-    b.textContent = `версия ${v} · проверить обновления`;
   })
   .catch(() => {});
+
+// ---------- settings ----------
+
+function repaintMarks() {
+  if (shownDays) renderSchedule(shownDays, false);
+  if (lastReport) renderFinal(lastReport);
+}
+
+function colorGrid(): string {
+  return Array.from({ length: 10 }, (_, i) => i + 1)
+    .map((m) => `<button class="color-opt mark-${colorOf(m)}" data-url="m${m}">${m}</button>`)
+    .join("");
+}
+
+function showSettings() {
+  openSheet(
+    `<div class="sheet-title">Настройки</div>
+     <div class="set-group">
+       <div class="det-label">Цвета отметок</div>
+       <p class="sheet-sub">Нажми на отметку, чтобы сменить цвет</p>
+       <div class="color-grid">${colorGrid()}</div>
+       <button class="set-btn" data-url="reset">Сбросить цвета</button>
+     </div>
+     <div class="set-group">
+       <div class="det-label">Обновления</div>
+       <button class="set-btn" data-url="update" id="set-update">Проверить обновления</button>
+     </div>
+     <p class="set-version">schools.bye${appVersion ? ` · версия ${escapeHtml(appVersion)}` : ""}</p>`,
+    async (el) => {
+      const key = el.dataset.url!;
+      if (key === "update") {
+        const b = el as HTMLButtonElement;
+        b.disabled = true;
+        b.textContent = "Проверяю…";
+        await checkUpdate(true);
+        b.disabled = false;
+        b.textContent = "Проверить обновления";
+        if (update) showUpdate();
+        return;
+      }
+      if (key === "reset") markColors = {};
+      else {
+        const m = Number(key.slice(1));
+        const next = MARK_COLORS[(MARK_COLORS.indexOf(colorOf(m)) + 1) % MARK_COLORS.length];
+        if (next === defaultColor(m)) delete markColors[m];
+        else markColors[m] = next;
+      }
+      store.set("mark-colors", markColors);
+      $("sheet").querySelector(".color-grid")!.innerHTML = colorGrid();
+      repaintMarks();
+    },
+  );
+}
+
+$("settings-btn").addEventListener("click", showSettings);
+
+// ---------- scroll indicator ----------
+
+{
+  const thumb = $("scroll-thumb");
+  let hideTimer = 0;
+  const paint = () => {
+    const doc = document.documentElement;
+    const vh = window.innerHeight;
+    const max = doc.scrollHeight - vh;
+    if (max <= 4 || document.body.classList.contains("sheet-open")) return;
+    const top = $("app-header").offsetHeight + 6;
+    const track = vh - top - 6;
+    const h = Math.max(36, (track * vh) / doc.scrollHeight);
+    thumb.style.height = `${h}px`;
+    thumb.style.transform = `translateY(${top + ((track - h) * window.scrollY) / max}px)`;
+    thumb.classList.add("show");
+    clearTimeout(hideTimer);
+    hideTimer = window.setTimeout(() => thumb.classList.remove("show"), 900);
+  };
+  window.addEventListener("scroll", paint, { passive: true });
+}
 
 // ---------- auth ----------
 
@@ -1349,6 +1431,7 @@ $("logout-btn").addEventListener("click", async () => {
   if (!confirm("Вы точно хотите выйти?")) return;
   await invoke("logout");
   store.clear();
+  store.set("mark-colors", markColors); // device preference, not account data
   weekCache.clear();
   details.clear();
   detailsReady.clear();
