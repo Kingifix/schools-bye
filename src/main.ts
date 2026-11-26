@@ -132,6 +132,17 @@ const store = {
   },
 };
 
+/** Short display name: "Физическая культура(Плавание)" → "Плавание", "Физ. к. и зд." → "Физ. к.",
+ *  "Ист. Бел. в кон. всем. ист." → "Ист. Бел.". Data keeps the original name. */
+function shortSubject(name: string): string {
+  const paren = name.match(/\(\s*([^)]+?)\s*\)/);
+  if (paren) return paren[1].charAt(0).toUpperCase() + paren[1].slice(1);
+  if (/^физ(ическая)?\.?\s*к(ульт|\.)/i.test(name)) return "Физ. к.";
+  // Abbreviated names ("Ист. Бел. в …"): keep the part before " в " / " и ".
+  if (name.includes(".")) return name.replace(/\s+(в|и)\s+.*$/, "");
+  return name;
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
@@ -435,7 +446,7 @@ function linkify(text: string): string {
 }
 
 async function showLessonDetails(day: Day, dayIndex: number, lesson: Lesson) {
-  const title = lesson.number ? `${lesson.number}. ${lesson.subject}` : lesson.subject;
+  const title = lesson.number ? `${lesson.number}. ${shortSubject(lesson.subject)}` : shortSubject(lesson.subject);
   const head =
     `<div class="det-head"><div>` +
     `<p class="sheet-sub det-date">${escapeHtml(day.date ? `${day.date}, ${day.day_of_week}` : day.day_of_week)}</p>` +
@@ -538,7 +549,7 @@ $("marks-btn").addEventListener("click", () => {
       newMarks
         .map(
           (m, i) => `<div class="new-mark" data-url="${i}">
-            <div class="new-mark-info"><div class="new-mark-subj">${escapeHtml(m.subject)}</div>
+            <div class="new-mark-info"><div class="new-mark-subj">${escapeHtml(shortSubject(m.subject))}</div>
             <div class="sheet-sub">${escapeHtml(m.date)}</div></div>
             <div class="lesson-mark ${levelOfMark(m.value)}">${escapeHtml(m.value)}</div>
           </div>`,
@@ -706,7 +717,7 @@ function renderSchedule(days: Day[], scrollToToday: boolean) {
 
       const subject = document.createElement("p");
       subject.className = "lesson-subject";
-      subject.textContent = lesson.number ? `${lesson.number}. ${lesson.subject}` : lesson.subject;
+      subject.textContent = lesson.number ? `${lesson.number}. ${shortSubject(lesson.subject)}` : shortSubject(lesson.subject);
 
       const hwBox = document.createElement("div");
       hwBox.className = "homework-container";
@@ -1037,7 +1048,7 @@ function chooseSubjectGoal(s: SubjectMarks) {
     .map((g) => `<button class="goal-opt ${markLevel(g)}${own && g === cur ? " picked" : ""}" data-url="${g}">${g}</button>`)
     .join("");
   openSheet(
-    `<div class="sheet-title">Цель · ${escapeHtml(s.subject)}</div>
+    `<div class="sheet-title">Цель · ${escapeHtml(shortSubject(s.subject))}</div>
      <p class="sheet-sub">Только для этого предмета.</p>
      <div class="goal-grid">${opts}</div>
      <button class="goal-off${own ? "" : " picked"}" data-url="common">Как у всех${goal === null ? " (без цели)" : ` (${goal})`}</button>
@@ -1059,7 +1070,7 @@ function showGoalDetails(s: SubjectMarks) {
   const all = allMarks(s);
   const [sum, n] = [sumOf(all), all.length];
   const avg = n ? sum / n : 0;
-  const title = `<div class="sheet-title">${escapeHtml(s.subject)} → ${g}</div>`;
+  const title = `<div class="sheet-title">${escapeHtml(shortSubject(s.subject))} → ${g}</div>`;
   const sub = `<p class="sheet-sub">Сейчас ${n ? avg.toFixed(2) : "—"} · ${n} отм.${s.half ? " за полугодие" : ""}. Для ${g} нужно среднее от ${(g - 0.5).toFixed(1)}.</p>`;
   const d = deficit(sum, n, g);
 
@@ -1153,7 +1164,7 @@ function renderCurrent(report: FinalReport) {
         (own !== undefined ? `<span class="half-tag goal-tag">${own === null ? "без цели" : `цель ${own}`}</span>` : "");
       return `<div class="cur-row" data-i="${i}">
         <div class="cur-head">
-          <span class="cur-subj">${escapeHtml(s.subject)}${tags}</span>
+          <span class="cur-subj">${escapeHtml(shortSubject(s.subject))}${tags}</span>
           <span class="cur-avg ${markLevel(s.avg)}">${s.avg.toFixed(2)}</span>
         </div>
         <div class="cur-marks">${marks}${goalHint(s, i)}</div>
@@ -1174,7 +1185,7 @@ function renderFinal(report: FinalReport) {
   const body = report.rows
     .map(
       (r, i) =>
-        `<tr><th class="subj">${escapeHtml(r.subject)}</th>${rowCells(
+        `<tr><th class="subj">${escapeHtml(shortSubject(r.subject))}</th>${rowCells(
           r,
           i,
         )}${cellHtml(r.year, i, 4)}</tr>`,
