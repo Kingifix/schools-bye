@@ -806,7 +806,7 @@ body.sheet-open .sheet {
 .update-banner:active { transform: translateX(-50%) scale(0.97); }
 .update-banner.loading {
   padding: 8px 16px;
-  background: linear-gradient(90deg, color-mix(in oklch, var(--accent) 28%, var(--card-2)) var(--p, 0%), var(--card-2) var(--p, 0%));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 35%, var(--card-2)) var(--p, 0%), var(--card-2) var(--p, 0%));
 }
 .ub-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 25%, transparent); }
 .ub-text { overflow: hidden; text-overflow: ellipsis; }

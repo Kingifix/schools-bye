@@ -1,6 +1,6 @@
 [package]
 name = "schools-bye"
-version = "0.5.5"
+version = "0.5.6"
 description = "schools.by alternative"
 authors = ["jk"]
 edition = "2021"

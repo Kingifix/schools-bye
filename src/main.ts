@@ -1261,7 +1261,7 @@ interface UpdateInfo {
 let update: UpdateInfo | null = store.get<UpdateInfo>("update-info") ?? null;
 let updating = false;
 // One unauthenticated GitHub request; their limit is 60/hour, so every 30 min is safe.
-const UPDATE_CHECK_EVERY = 30 * 60_000;
+const UPDATE_CHECK_EVERY = 2 * 60_000;
 
 /** Minimal Markdown for release notes: headings, lists, **bold**, `code`, [links](…), bare URLs. */
 function markdown(src: string): string {
