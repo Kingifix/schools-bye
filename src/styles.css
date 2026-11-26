@@ -359,7 +359,7 @@ body.menu-open .view-menu { opacity: 1; transform: none; pointer-events: auto; }
   padding: 10px 0;
   border-top: 1px solid var(--border);
 }
-.new-mark { cursor: pointer; border-radius: 10px; }
+.new-mark { cursor: pointer; }
 .new-mark:active { background: var(--card-2); }
 .new-mark-info { flex: 1; min-width: 0; }
 .new-mark-subj { font-weight: 500; }
