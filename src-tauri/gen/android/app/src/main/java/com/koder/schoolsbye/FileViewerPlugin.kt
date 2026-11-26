@@ -24,18 +24,19 @@ class OpenFileArgs {
 /** Opens a downloaded (cached) file with the system "Open with…" chooser. */
 @TauriPlugin
 class FileViewerPlugin(private val activity: Activity) : Plugin(activity) {
+  private fun mimeOf(file: File, hint: String?): String =
+    hint?.takeIf { it.isNotBlank() && it != "application/octet-stream" }
+      ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase())
+      ?: "*/*"
+
   @Command
   fun open(invoke: Invoke) {
     try {
       val args = invoke.parseArgs(OpenFileArgs::class.java)
       val file = File(args.path)
       val uri = FileProvider.getUriForFile(activity, activity.packageName + ".fileprovider", file)
-      val fromExt = MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase())
-      val mime = args.mime?.takeIf { it.isNotBlank() && it != "application/octet-stream" }
-        ?: fromExt
-        ?: "*/*"
       val view = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(uri, mime)
+        setDataAndType(uri, mimeOf(file, args.mime))
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
       }
       val chooser = Intent.createChooser(view, file.name).apply {
@@ -45,6 +46,29 @@ class FileViewerPlugin(private val activity: Activity) : Plugin(activity) {
       invoke.resolve()
     } catch (ex: Exception) {
       invoke.reject(ex.message ?: "Cannot open file")
+    }
+  }
+
+  /** Sends a downloaded (cached) file to the system share sheet. */
+  @Command
+  fun share(invoke: Invoke) {
+    try {
+      val args = invoke.parseArgs(OpenFileArgs::class.java)
+      val file = File(args.path)
+      val uri = FileProvider.getUriForFile(activity, activity.packageName + ".fileprovider", file)
+      val send = Intent(Intent.ACTION_SEND).apply {
+        type = mimeOf(file, args.mime)
+        putExtra(Intent.EXTRA_STREAM, uri)
+        clipData = android.content.ClipData.newRawUri(file.name, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
+      val chooser = Intent.createChooser(send, file.name).apply {
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
+      activity.startActivity(chooser)
+      invoke.resolve()
+    } catch (ex: Exception) {
+      invoke.reject(ex.message ?: "Cannot share file")
     }
   }
 

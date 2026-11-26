@@ -570,11 +570,13 @@ struct OpenFileArgs {
     mime: Option<String>,
 }
 
-/// Downloads an attachment into the app cache (once) and opens it with the system chooser.
+/// Downloads an attachment into the app cache (once) and opens it with the system chooser
+/// (or the share sheet when `share` is set).
 #[tauri::command]
 async fn open_attachment(
     url: String,
     name: Option<String>,
+    share: Option<bool>,
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
@@ -657,12 +659,15 @@ async fn open_attachment(
         let viewer = app.state::<FileViewer>();
         viewer
             .0
-            .run_mobile_plugin::<()>("open", OpenFileArgs { path: path.to_string_lossy().into_owned(), mime })
+            .run_mobile_plugin::<()>(
+                if share.unwrap_or(false) { "share" } else { "open" },
+                OpenFileArgs { path: path.to_string_lossy().into_owned(), mime },
+            )
             .map_err(|e| e.to_string())?;
     }
     #[cfg(not(target_os = "android"))]
     {
-        let _ = mime;
+        let _ = (mime, share);
         use tauri_plugin_opener::OpenerExt;
         app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())?;
     }

@@ -248,6 +248,12 @@ body.menu-open .view-menu { opacity: 1; transform: none; pointer-events: auto; }
   margin-top: 6px;
 }
 
+.attachment-btn,
+.sheet-item {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
 .attachment-btn {
   display: flex;
   align-items: center;

@@ -714,6 +714,7 @@ function renderSchedule(days: Day[], scrollToToday: boolean) {
         btn.className = "attachment-btn";
         btn.innerHTML = `<img src="${fileIcon}" alt="" class="attachment-icon" /><span>Файл</span>`;
         btn.onclick = () => showAttachments(lesson.attachments_url!);
+        onLongPress(btn, () => showAttachments(lesson.attachments_url!, true));
         hwBox.appendChild(btn);
       }
 
@@ -761,10 +762,49 @@ $("schedule").addEventListener("click", (e) => {
 
 // ---------- attachments / bottom sheet ----------
 
+/** Long press (~0.5 s) on `el` (or a `selector` match inside it); the click that follows is swallowed. */
+function onLongPress(el: HTMLElement, cb: (target: HTMLElement) => void, selector?: string) {
+  let timer = 0;
+  let x = 0;
+  let y = 0;
+  let fired = false;
+  const cancel = () => clearTimeout(timer);
+  el.addEventListener("pointerdown", (e) => {
+    const target = selector ? (e.target as HTMLElement).closest<HTMLElement>(selector) : el;
+    if (!target) return;
+    fired = false;
+    x = e.clientX;
+    y = e.clientY;
+    cancel();
+    timer = window.setTimeout(() => {
+      fired = true;
+      navigator.vibrate?.(30);
+      cb(target);
+    }, 500);
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (Math.abs(e.clientX - x) > 10 || Math.abs(e.clientY - y) > 10) cancel();
+  });
+  el.addEventListener("pointerup", cancel);
+  el.addEventListener("pointercancel", cancel);
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
+  el.addEventListener(
+    "click",
+    (e) => {
+      if (!fired) return;
+      fired = false;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    },
+    true,
+  );
+}
+
 function openSheet(html: string, onClick?: (el: HTMLElement) => void) {
   const sheet = $("sheet");
   sheet.innerHTML = html;
   sheet.scrollTop = 0;
+  sheetLongPress = null;
   sheet.onclick = (e) => {
     const link = (e.target as HTMLElement).closest<HTMLAnchorElement>("a.hw-link");
     if (link) {
@@ -781,14 +821,17 @@ function closeSheet() {
   document.body.classList.remove("sheet-open");
 }
 $("sheet-backdrop").addEventListener("click", closeSheet);
+// Long press on a file in the sheet → share it.
+let sheetLongPress: ((el: HTMLElement) => void) | null = null;
+onLongPress($("sheet"), (el) => sheetLongPress?.(el), "[data-url]");
 
 let opening = false;
-async function openFile(f: Attachment) {
+async function openFile(f: Attachment, share = false) {
   if (opening) return;
   opening = true;
-  toast(`Открываю «${f.name}»…`);
+  toast(share ? `Готовлю «${f.name}»…` : `Открываю «${f.name}»…`);
   try {
-    await invoke("open_attachment", { url: f.download_url, name: f.name });
+    await invoke("open_attachment", { url: f.download_url, name: f.name, share });
   } catch (e) {
     handleError(e);
   } finally {
@@ -796,11 +839,11 @@ async function openFile(f: Attachment) {
   }
 }
 
-async function showAttachments(url: string) {
+async function showAttachments(url: string, share = false) {
   try {
     const files = await invoke<Attachment[]>("fetch_attachments", { url });
     if (files.length === 0) return toast("Файлов нет");
-    if (files.length === 1) return openFile(files[0]);
+    if (files.length === 1) return openFile(files[0], share);
     openSheet(
       files
         .map(
@@ -813,6 +856,10 @@ async function showAttachments(url: string) {
         openFile(files[Number(el.dataset.url)]);
       },
     );
+    sheetLongPress = (el) => {
+      closeSheet();
+      openFile(files[Number(el.dataset.url)], true);
+    };
   } catch (e) {
     handleError(e);
   }
